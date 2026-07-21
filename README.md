@@ -1,4 +1,4 @@
-# gpud: Lightweight Declarative Elastic GPU Scaling & Memory Offloading Framework for PyTorch DDP
+# gpud: Lightweight Declarative GPU Runtime Scheduling & Memory Offloading Framework for PyTorch DDP
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange.svg)](https://pytorch.org/)
@@ -6,15 +6,15 @@
 
 [中文文档 (Chinese Readme)](README.zh.md)
 
-`gpud` is an extremely lightweight, declarative elastic GPU scheduling and VRAM offloading framework designed for PyTorch Distributed Data Parallel (DDP).
+`gpud` is an extremely lightweight, declarative GPU **Runtime Scheduling (运行时调度)** and VRAM offloading framework designed for PyTorch Distributed Data Parallel (DDP).
 
-During model training, you **do not need to terminate processes** or **reload checkpoints from disk**. By simply updating the `config.toml` configuration file, `gpud` dynamically resizes training GPU clusters and adjusts active card IDs (e.g. scaling from 8 GPUs `[0, 1, 2, 3, 4, 5, 6, 7]` to 4 GPUs `[0, 1, 2, 3]` or any arbitrary card subset) at Epoch boundaries, while completely freeing suspended GPU VRAM down to **0 MB**.
+During model training, you **do not need to terminate processes** or **reload checkpoints from disk**. By simply updating the `config.toml` configuration file, `gpud` performs live runtime scheduling to dynamically resize GPU clusters and adjust active card IDs (e.g. scaling from 8 GPUs `[0, 1, 2, 3, 4, 5, 6, 7]` to 4 GPUs `[0, 1, 2, 3]` or any arbitrary card subset) at Epoch boundaries, while completely freeing suspended GPU VRAM down to **0 MB**.
 
 ---
 
 ## 🌟 Key Features & Problem Solved
 
-1. **Dynamic GPU Scaling (Expansion & Reduction)**:
+1. **Runtime Scheduling & Dynamic GPU Scaling (运行时调度与动态增减容)**:
    * Supports dynamic GPU count and card selection in Data Parallel (DDP) training (e.g., 8-card full cluster `[0, 1, 2, 3, 4, 5, 6, 7]`, 4-card scaling `[0, 1, 2, 3]`, or arbitrary subsets like `[0, 2, 5]`).
 2. **Zero Downtime & Zero Checkpoint I/O Overhead**:
    * Eliminates the traditional high-latency workflow: *"kill process -> modify launch script -> reload large checkpoint from disk"*.

@@ -1,6 +1,6 @@
-# gpud: 极轻量 PyTorch 弹性 GPU 动态扩缩容与显存 Offload 框架
+# gpud: 极轻量 PyTorch 弹性 GPU 运行时调度与显存 Offload 框架
 
-`gpud` 是一个专为 PyTorch 分布式数据并行（DDP）设计的极轻量、声明式弹性 GPU 调度与显存换入换出（Offloading）框架。
+`gpud` 是一个专为 PyTorch 分布式数据并行（DDP）设计的极轻量、声明式 GPU **运行时调度 (Runtime Scheduling)** 与显存换入换出（Offloading）框架。
 
 在模型训练过程中，你**无需终止进程**、**无需重新加载 Checkpoint**，只需直接修改 `config.toml` 配置文件，即可在 Epoch 边界动态平滑地改变参与训练的 GPU 卡数与指定卡号（如从 8 卡全量缩容至 4 卡或任意指定卡号组合），同时将落选 GPU 的显存完全释放至 **0 MB**。
 
@@ -8,7 +8,7 @@
 
 ## 🌟 核心特性与解决痛点
 
-1. **动态增容减容 (Dynamic Scaling)**：
+1. **运行时调度与动态增容减容 (Runtime Scheduling & Dynamic Scaling)**：
    * 支持数据并行（DDP）训练中动态指定任意卡号与卡数量。例如 8 卡全量 `[0, 1, 2, 3, 4, 5, 6, 7]`、动态缩容至 4 卡 `[0, 1, 2, 3]` 或任意组合如 `[0, 2, 5]`。
 2. **零重启与免 I/O 成本 (Zero Downtime)**：
    * 彻底消除传统“手动杀死进程 -> 修改可用卡数 -> 重新加载 Checkpoint”带来的开销与时间浪费。
