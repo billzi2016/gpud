@@ -160,7 +160,7 @@ def get_cifar10_datasets():
 # 【GPUD 弹性调度装饰器接入】：仅需加此 1 行装饰器！即刻接管多卡扩缩容与显存 Offload
 # ==============================================================================
 @elastic_scheduler(config_path="config.toml")
-def train_one_epoch(model, dataset, optimizer, criterion, epoch, device):
+def train_one_epoch(model, dataset, optimizer, criterion, epoch, device, last_val_loss=None, last_val_acc=None):
     """
     单 Epoch 训练函数：
     在 @elastic_scheduler 装饰的作用下：
@@ -183,8 +183,14 @@ def train_one_epoch(model, dataset, optimizer, criterion, epoch, device):
     # 这里的 dataset 已被 gpud 装饰器替换为分配好子卡 Sampler 的 DataLoader
     dataloader = dataset
 
-    # 使用 tqdm 打印进度条 (仅 Rank 0 节点打印，避免多卡日志乱序)
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch:04d} [Train]", disable=not is_rank0, leave=True)
+    # 使用经典 tqdm 风格进度条 (包含 进度%, Step, 耗时, ETA, 速率, train_loss, train_acc, val_loss, val_acc)
+    pbar = tqdm(
+        dataloader,
+        desc=f"Epoch {epoch:04d} | Train",
+        disable=not is_rank0,
+        leave=True,
+        dynamic_ncols=True
+    )
 
     for images, targets in pbar:
         images = images.to(current_device)
@@ -203,18 +209,22 @@ def train_one_epoch(model, dataset, optimizer, criterion, epoch, device):
         correct += predicted.eq(targets).sum().item()
 
         if is_rank0:
-            pbar.set_postfix({
-                "Loss": f"{loss.item():.4f}",
-                "Acc": f"{100.0 * correct / max(1, total):.2f}%"
-            })
+            postfix = {
+                "train_loss": f"{loss.item():.4f}",
+                "train_acc": f"{100.0 * correct / max(1, total):.2f}%"
+            }
+            if last_val_loss is not None and last_val_acc is not None:
+                postfix["val_loss"] = f"{last_val_loss:.4f}"
+                postfix["val_acc"] = f"{last_val_acc:.2f}%"
+            pbar.set_postfix(postfix)
 
     elapsed = time.time() - start_time
     avg_loss = total_loss / max(1, total)
     accuracy = 100.0 * correct / max(1, total)
 
     if is_rank0:
-        print(f"--> [Epoch {epoch:04d}] Rank {rank} 训练完成 | 耗时: {elapsed:.2f}s | Train Loss: {avg_loss:.4f} | Train Acc: {accuracy:.2f}%")
-    return avg_loss
+        print(f"--> [Epoch {epoch:04d}] Train Loss: {avg_loss:.4f} | Train Acc: {accuracy:.2f}% | 耗时: {elapsed:.2f}s")
+    return avg_loss, accuracy
 
 
 def validate(model, val_dataset, criterion, epoch, device):
@@ -236,7 +246,13 @@ def validate(model, val_dataset, criterion, epoch, device):
     total = 0
 
     with torch.no_grad():
-        pbar = tqdm(val_loader, desc=f"Epoch {epoch:04d} [Val]", disable=not is_rank0, leave=False)
+        pbar = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch:04d} | Val  ",
+            disable=not is_rank0,
+            leave=False,
+            dynamic_ncols=True
+        )
         for images, targets in pbar:
             images, targets = images.to(current_device), targets.to(current_device)
             outputs = model(images)
@@ -248,12 +264,18 @@ def validate(model, val_dataset, criterion, epoch, device):
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
+            if is_rank0:
+                pbar.set_postfix({
+                    "val_loss": f"{loss.item():.4f}",
+                    "val_acc": f"{100.0 * correct / max(1, total):.2f}%"
+                })
+
     avg_loss = total_loss / max(1, total)
     accuracy = 100.0 * correct / max(1, total)
 
     if is_rank0:
-        print(f"==> [Epoch {epoch:04d} Val Result] Test Loss: {avg_loss:.4f} | Test Acc: {accuracy:.2f}%\n")
-    return accuracy
+        print(f"==> [Epoch {epoch:04d}] Val Loss: {avg_loss:.4f} | Val Acc: {accuracy:.2f}%\n")
+    return avg_loss, accuracy
 
 
 # ------------------------------------------------------------------------------
@@ -293,9 +315,14 @@ def main():
     print("------------------------------------------------------------------\n")
 
     epoch = 1
+    val_loss = None
+    val_acc = None
     while True:
-        train_one_epoch(model, train_dataset, optimizer, criterion, epoch, device)
-        validate(model, test_dataset, criterion, epoch, device)
+        train_loss, train_acc = train_one_epoch(
+            model, train_dataset, optimizer, criterion, epoch, device,
+            last_val_loss=val_loss, last_val_acc=val_acc
+        )
+        val_loss, val_acc = validate(model, test_dataset, criterion, epoch, device)
         epoch += 1
 
 
