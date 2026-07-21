@@ -2,9 +2,12 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange.svg)](https://pytorch.org/)
+[![GPU](https://img.shields.io/badge/GPU-CUDA%20%2F%20NCCL-76b900.svg)](https://developer.nvidia.com/cuda-zone)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![English README](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
+[![中文文档](https://img.shields.io/badge/语言-中文文档-red.svg)](README.zh.md)
 
-[中文文档 (Chinese Readme)](README.zh.md)
+[English README](README.md) | [中文文档 (Chinese Readme)](README.zh.md)
 
 `gpud` is an extremely lightweight, declarative GPU **Runtime Scheduling (运行时调度)** and VRAM offloading framework designed for PyTorch Distributed Data Parallel (DDP).
 
