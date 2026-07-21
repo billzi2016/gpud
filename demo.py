@@ -189,7 +189,7 @@ def train_one_epoch(model, dataset, optimizer, criterion, epoch, device, last_va
         desc=f"Epoch {epoch:04d} | Train",
         disable=not is_rank0,
         leave=True,
-        dynamic_ncols=True
+        ncols=150
     )
 
     for images, targets in pbar:
@@ -251,7 +251,7 @@ def validate(model, val_dataset, criterion, epoch, device):
             desc=f"Epoch {epoch:04d} | Val  ",
             disable=not is_rank0,
             leave=False,
-            dynamic_ncols=True
+            ncols=150
         )
         for images, targets in pbar:
             images, targets = images.to(current_device), targets.to(current_device)
