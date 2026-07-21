@@ -1,6 +1,6 @@
 """
 ==============================================================================
-demo.py - 基于 Vision Transformer (ViT-H) 和 MNIST 的 gpud 弹性训练示例
+demo.py - 基于 Vision Transformer (ViT-H) 与 CIFAR-10 (224x224) 的 gpud 弹性训练示例
 ==============================================================================
 说明：
 本脚本演示如何在常规 PyTorch 分布式数据并行 (DDP) 训练代码中，仅通过添加【1-2 行代码】接入 gpud 调度器。
@@ -24,6 +24,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 # ==============================================================================
 # 【GPUD 调度器导入】：仅需引入 elastic_scheduler 装饰器 (添加 1 行)
@@ -36,7 +37,7 @@ from gpud import elastic_scheduler
 # ------------------------------------------------------------------------------
 class PatchEmbedding(nn.Module):
     """图像 Patch 切分与 Embedding 映射层"""
-    def __init__(self, img_size=28, patch_size=4, in_chans=1, embed_dim=1280):
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=1280):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
@@ -75,10 +76,10 @@ class TransformerBlock(nn.Module):
 class VisionTransformerH(nn.Module):
     """
     ViT-H (Huge) 架构定义：
-    包含 32 层 Transformer Block，1280 维隐藏特征向量，约 6.3 亿参数。
+    输入尺寸 224x224，Patch 16x16，3 通道，包含 32 层 Transformer Block，1280 维隐藏特征向量，约 6.3 亿参数。
     当卡 4~7 被动态缩容让出时，能直观看到每张卡 7.5GB+ 的物理显存完全释放为 0 MB。
     """
-    def __init__(self, img_size=28, patch_size=4, in_chans=1, num_classes=10, embed_dim=1280, depth=32, num_heads=16):
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=10, embed_dim=1280, depth=32, num_heads=16):
         super().__init__()
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_chans, embed_dim)
         num_patches = self.patch_embed.num_patches
@@ -108,13 +109,13 @@ class VisionTransformerH(nn.Module):
 
 
 # ------------------------------------------------------------------------------
-# 2. 数据准备：MNIST 数据集 (附带离线合成数据自动退避机制)
+# 2. 数据准备：CIFAR-10 数据集 (全量 50k 训练 / 10k 测试，双三次插值至 224x224)
 # ------------------------------------------------------------------------------
-class SyntheticMNISTDataset(Dataset):
-    """用于无网络连接/自动测试时的伪 MNIST 数据集"""
-    def __init__(self, size=2000):
+class SyntheticCIFAR10Dataset(Dataset):
+    """用于无网络连接/离线自动测试时的伪 CIFAR-10 数据集 (224x224, 3通道)"""
+    def __init__(self, size=1000):
         self.size = size
-        self.data = torch.randn(size, 1, 28, 28)
+        self.data = torch.randn(size, 3, 224, 224)
         self.targets = torch.randint(0, 10, (size,))
 
     def __len__(self):
@@ -124,24 +125,36 @@ class SyntheticMNISTDataset(Dataset):
         return self.data[idx], self.targets[idx]
 
 
-def get_mnist_dataset():
-    """获取 MNIST 数据集"""
-    transform = transforms.Compose([
+def get_cifar10_datasets():
+    """获取 CIFAR-10 训练集与测试集（以 Bicubic 双三次插值调整为 224x224）"""
+    transform_train = transforms.Compose([
+        transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
+    transform_test = transforms.Compose([
+        transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+
     try:
-        dataset = torchvision.datasets.MNIST(
-            root="./data", train=True, download=True, transform=transform
+        train_dataset = torchvision.datasets.CIFAR10(
+            root="./data", train=True, download=True, transform=transform_train
+        )
+        test_dataset = torchvision.datasets.CIFAR10(
+            root="./data", train=False, download=True, transform=transform_test
         )
     except Exception:
-        print("[Demo Notice] 网络无法直接下载 MNIST 数据集，自动切换为合成 MNIST 数据模式。")
-        dataset = SyntheticMNISTDataset(size=2000)
-    return dataset
+        print("[Demo Notice] 网络无法直接下载 CIFAR-10 数据集，自动切换为离线合成 CIFAR-10 模式。")
+        train_dataset = SyntheticCIFAR10Dataset(size=2000)
+        test_dataset = SyntheticCIFAR10Dataset(size=500)
+    return train_dataset, test_dataset
 
 
 # ------------------------------------------------------------------------------
-# 3. Epoch 训练逻辑
+# 3. Epoch 训练与验证逻辑
 # ------------------------------------------------------------------------------
 # ==============================================================================
 # 【GPUD 弹性调度装饰器接入】：仅需加此 1 行装饰器！即刻接管多卡扩缩容与显存 Offload
@@ -164,10 +177,16 @@ def train_one_epoch(model, dataset, optimizer, criterion, epoch, device):
     total = 0
     start_time = time.time()
 
+    rank = int(os.environ.get("RANK", 0))
+    is_rank0 = (rank == 0)
+
     # 这里的 dataset 已被 gpud 装饰器替换为分配好子卡 Sampler 的 DataLoader
     dataloader = dataset
 
-    for batch_idx, (images, targets) in enumerate(dataloader):
+    # 使用 tqdm 打印进度条 (仅 Rank 0 节点打印，避免多卡日志乱序)
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch:04d} [Train]", disable=not is_rank0, leave=True)
+
+    for images, targets in pbar:
         images = images.to(current_device)
         targets = targets.to(current_device)
 
@@ -177,62 +196,107 @@ def train_one_epoch(model, dataset, optimizer, criterion, epoch, device):
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item() * images.size(0)
+        batch_size = images.size(0)
+        total_loss += loss.item() * batch_size
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
+
+        if is_rank0:
+            pbar.set_postfix({
+                "Loss": f"{loss.item():.4f}",
+                "Acc": f"{100.0 * correct / max(1, total):.2f}%"
+            })
 
     elapsed = time.time() - start_time
     avg_loss = total_loss / max(1, total)
     accuracy = 100.0 * correct / max(1, total)
 
-    rank = int(os.environ.get("RANK", 0))
-    print(f"--> [Epoch {epoch:02d}] Rank {rank} 训练完成 | 耗时: {elapsed:.2f}s | Loss: {avg_loss:.4f} | Acc: {accuracy:.2f}%")
+    if is_rank0:
+        print(f"--> [Epoch {epoch:04d}] Rank {rank} 训练完成 | 耗时: {elapsed:.2f}s | Train Loss: {avg_loss:.4f} | Train Acc: {accuracy:.2f}%")
     return avg_loss
 
 
+def validate(model, val_dataset, criterion, epoch, device):
+    """
+    模型评估验证逻辑：使用 CIFAR-10 全量 Test 集评测模型准确率 (Acc)，验证动态调度不会对模型收敛产生任何影响
+    """
+    is_cuda = next(model.parameters()).is_cuda
+    current_device = next(model.parameters()).device if is_cuda else torch.device("cpu")
+    rank = int(os.environ.get("RANK", 0))
+    is_rank0 = (rank == 0)
+
+    val_loader = val_dataset if isinstance(val_dataset, DataLoader) else DataLoader(
+        val_dataset, batch_size=64, shuffle=False, num_workers=max(1, (os.cpu_count() or 2) // 2)
+    )
+
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        pbar = tqdm(val_loader, desc=f"Epoch {epoch:04d} [Val]", disable=not is_rank0, leave=False)
+        for images, targets in pbar:
+            images, targets = images.to(current_device), targets.to(current_device)
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+
+            batch_size = images.size(0)
+            total_loss += loss.item() * batch_size
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+
+    avg_loss = total_loss / max(1, total)
+    accuracy = 100.0 * correct / max(1, total)
+
+    if is_rank0:
+        print(f"==> [Epoch {epoch:04d} Val Result] Test Loss: {avg_loss:.4f} | Test Acc: {accuracy:.2f}%\n")
+    return accuracy
+
+
 # ------------------------------------------------------------------------------
-# 4. 主程序入口
+# 4. 主程序入口 (无限循环无限 Epoch 训练)
 # ------------------------------------------------------------------------------
 def main():
     print("==================================================================")
-    print("      gpud ViT-H MNIST 弹性显存调度 & 数据并行 训练 Demo          ")
+    print("     gpud ViT-H CIFAR-10 (224x224) 弹性调度 & 验证 Demo          ")
     print("==================================================================")
 
-    # 打印 CPU 核心数配置
     half_cpus = max(1, (os.cpu_count() or 2) // 2)
-    print(f"[系统环境] CPU 核心总数: {os.cpu_count()}，gpud 将自动使用 {half_cpus} 个线程并行加载数据。")
+    print(f"[系统环境] CPU 核心总数: {os.cpu_count()}，gpud DataLoader 将使用 {half_cpus} 线程加载。")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. 实例化 ViT-H 大模型
-    print("[初始化] 正在构建 ViT-H (Vision Transformer Heavy, ~6.3 亿参数) 大模型...")
+    # 1. 实例化 ViT-H (224x224, 3通道, patch_size=16) 大模型
+    print("[初始化] 正在构建 ViT-H (224x224 3通道, ~6.3 亿参数) 大模型...")
     model = VisionTransformerH(
-        img_size=28, patch_size=4, in_chans=1, num_classes=10,
+        img_size=224, patch_size=16, in_chans=3, num_classes=10,
         embed_dim=1280, depth=32, num_heads=16
     ).to(device)
 
-    # 2. 获取数据
-    dataset = get_mnist_dataset()
+    # 2. 获取 CIFAR-10 数据集 (全量 50k 训练集 + 10k 测试集)
+    train_dataset, test_dataset = get_cifar10_datasets()
 
     # 3. 优化器与损失函数
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.05)
     criterion = nn.CrossEntropyLoss()
 
-    # 4. 开始 Epoch 循环训练
-    num_epochs = 10
-    print(f"\n[开始训练] 计划运行 {num_epochs} 个 Epoch。")
+    # 4. 无限循环训练 (无最大 Epoch 限制)
+    print("\n[开始无限循环训练] 没有最大 Epoch 限制。使用 Ctrl+C 中断。")
     print("------------------------------------------------------------------")
     print("提示：训练过程中，你可以随时打开并编辑 config.toml 文件，例如：")
     print("  - 全量 8 卡： active_gpus = [0, 1, 2, 3, 4, 5, 6, 7]")
     print("  - 动态减容至 4 卡： active_gpus = [0, 1, 2, 3]")
-    print("  - 任意组合： active_gpus = [0, 2, 5, 7]")
+    print("  - 任意卡号组合： active_gpus = [0, 2, 5]")
     print("------------------------------------------------------------------\n")
 
-    for epoch in range(1, num_epochs + 1):
-        train_one_epoch(model, dataset, optimizer, criterion, epoch, device)
-
-    print("\n[训练完成] 所有 Epoch 弹性训练成功。")
+    epoch = 1
+    while True:
+        train_one_epoch(model, train_dataset, optimizer, criterion, epoch, device)
+        validate(model, test_dataset, criterion, epoch, device)
+        epoch += 1
 
 
 if __name__ == "__main__":
