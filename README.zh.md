@@ -105,16 +105,28 @@ torchrun --nproc_per_node=8 demo.py
 
 ---
 
+## 💻 Demo 脚本说明 (`demo.py`)
+
+`demo.py` 提供了一个完整、开箱即用的 Vision Transformer 大模型分布式训练示例，展示了 `gpud` 的完整特性：
+
+* **模型架构 (ViT-H)**： Vision Transformer Heavy (`img_size=224`, `patch_size=16`, `in_chans=3`, `embed_dim=1280`, `depth=32`, ~6.3 亿参数)。显存占用大，可清晰观测缩容时落选 GPU 7.5GB+ 显存瞬间释放至 **0 MB** 的过程。
+* **数据集处理**： CIFAR-10 全量数据集（50,000 张训练集，10,000 张测试集），通过双三次插值 (`Bicubic`) 上采样至 `224x224` 标准规格。
+* **无限 Epoch 训练**： 无最大 Epoch 限制，采用 `while True:` 无限循环，方便开发者随时修改 `config.toml` 测试多次动态缩容与扩容。
+* **`tqdm` 经典进度条**： 固定宽度 `ncols=150`，仅在 Rank 0 打印，实时显示 `train_loss`、`train_acc`、`val_loss`、`val_acc`、运行耗时、it/s 速率及 ETA 剩余时间。
+* **测试集评估 (Validation Acc)**： 每轮训练后自动对 10,000 张 Test 集做评测，验证动态扩缩容不会对模型收敛与准确率产生任何影响。
+
+---
+
 ## 🛠️ 项目结构
 
 ```
 gpud/
-├── config.toml    # 声明式 GPU 配置文件
+├── config.toml    # 声明式 GPU 配置文件 (活跃卡 active_gpus 定义)
 ├── gpud.py        # gpud 弹性调度装饰器与 Offload 管理器
-├── demo.py        # ViT-H 大模型 + MNIST 训练 Demo 脚本
+├── demo.py        # ViT-H (224x224 CIFAR-10) 弹性训练 & 验证 Demo 脚本
 ├── prd.md         # 产品需求文档 (PRD)
-├── README.md      # 英文 Readme
-└── README.zh.md   # 中文 Readme
+├── README.md      # 英文 README
+└── README.zh.md   # 中文 README
 ```
 
 ---

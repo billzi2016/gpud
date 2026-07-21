@@ -111,13 +111,25 @@ During live training, modify `config.toml` in another terminal window:
 
 ---
 
+## 💻 Demo Script Details (`demo.py`)
+
+`demo.py` provides an out-of-the-box Vision Transformer distributed training example demonstrating all features of `gpud`:
+
+* **Model Architecture (ViT-H)**: Vision Transformer Heavy (`img_size=224`, `patch_size=16`, `in_chans=3`, `embed_dim=1280`, `depth=32`, ~630 Million parameters). Substantial memory footprint allowing clear observation of 7.5GB+ per-GPU VRAM release down to **0 MB** when scaled down.
+* **Dataset & Upsampling**: Full CIFAR-10 dataset (50,000 training images, 10,000 test images), upsampled to `224x224` resolution using bicubic interpolation (`transforms.InterpolationMode.BICUBIC`).
+* **Infinite Epoch Training Loop**: Runs in an infinite `while True:` loop without maximum epoch limits, enabling continuous testing of live scaling via `config.toml`.
+* **Classic `tqdm` Progress Bar**: Formatted with `ncols=150` on Rank 0, displaying real-time `train_loss`, `train_acc`, `val_loss`, `val_acc`, elapsed time, processing rate (it/s), and ETA.
+* **Accuracy Validation**: Evaluates the 10,000 test images every epoch to prove dynamic GPU scaling does NOT impair model convergence or final accuracy.
+
+---
+
 ## 🛠️ Repository Structure
 
 ```
 gpud/
-├── config.toml    # Declarative GPU configuration
-├── gpud.py        # Elastic scheduler decorator & offload engine
-├── demo.py        # ViT-H大模型 + MNIST training demo script
+├── config.toml    # Declarative GPU configuration (active_gpus array)
+├── gpud.py        # Elastic scheduler decorator & VRAM offload engine
+├── demo.py        # ViT-H (224x224 CIFAR-10) elastic training & validation demo
 ├── prd.md         # Product Requirements Document
 ├── README.md      # English README
 └── README.zh.md   # Chinese README
